@@ -50,12 +50,12 @@
 
         <section class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-8">
             <div class="flex flex-col md:flex-row gap-3">
-                <input type="text" id="searchInput" placeholder="輸入關鍵字，例如 cat, flower, robot..." 
+                <input type="text" id="searchInput" placeholder="輸入關鍵字，例如 cat, robot, landscape..." 
                        class="flex-1 border border-gray-200 rounded-xl px-5 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition">
                 <button onclick="searchImages()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-8 py-3 rounded-xl transition">搜尋圖片</button>
                 <button onclick="changeBatch()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold px-6 py-3 rounded-xl transition">換一批</button>
             </div>
-            <div id="statusLabel" class="mt-4 text-sm text-gray-500 flex items-center gap-2 h-5">
+            <div id="statusLabel" class="mt-4 text-sm font-medium text-gray-600 flex items-center gap-2 h-5">
                 </div>
         </section>
 
@@ -101,7 +101,7 @@
                 <div class="h-4 w-px bg-blue-200"></div>
                 <div class="flex items-center gap-3">
                     <label class="text-xs font-bold text-blue-700">色彩容差:</label>
-                    <input type="range" id="tolerance" min="1" max="150" value="30" class="w-32 accent-blue-600">
+                    <input type="range" id="tolerance" min="1" max="150" value="40" class="w-32 accent-blue-600">
                 </div>
             </div>
         </section>
@@ -110,7 +110,7 @@
             <div class="flex justify-between items-start mb-6">
                 <div>
                     <h3 class="font-bold text-xl mb-1">圖片授權資訊</h3>
-                    <p class="text-gray-400 text-sm">請在使用圖片時標註來源</p>
+                    <p class="text-gray-400 text-sm">使用本站搜尋到的圖片時，請標註來源</p>
                 </div>
                 <button id="copyBtn" onclick="copyAttribution()" class="bg-gray-800 hover:bg-gray-700 text-sm px-4 py-2 rounded-lg transition border border-gray-700">複製標示</button>
             </div>
@@ -123,15 +123,14 @@
     <canvas id="processCanvas" class="hidden"></canvas>
 
     <script type="module">
-        // 使用 CDN 加載 AI 去背模組
-        import { removeBackground } from "https://cdn.jsdelivr.net/npm/@imgly/background-removal/+esm";
+        // 匯入 @imgly/background-removal (指定版本確保穩定)
+        import { removeBackground } from "https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.5.5/+esm";
 
         let currentImageData = [];
         let selectedIndex = -1;
         let batchOffset = 0;
         let processedBlob = null;
 
-        // 綁定全域函式供 HTML 調用
         window.searchImages = searchImages;
         window.changeBatch = changeBatch;
         window.selectImage = selectImage;
@@ -140,13 +139,10 @@
         window.copyAttribution = copyAttribution;
         window.fallbackWhiteRemove = fallbackWhiteRemove;
 
-        // 搜尋主功能
+        // 搜尋邏輯
         async function searchImages() {
             const query = document.getElementById('searchInput').value.trim();
-            if (!query) {
-                showStatus("請先輸入關鍵字");
-                return;
-            }
+            if (!query) return showStatus("請先輸入關鍵字");
             batchOffset = 0;
             resetUI();
             await performFetch(query);
@@ -155,55 +151,54 @@
         async function changeBatch() {
             const query = document.getElementById('searchInput').value.trim();
             if (!query) return;
-            batchOffset += 10;
+            batchOffset += 30; // 擴大位移，確保能跳過不符合格式的圖
             resetUI();
             await performFetch(query);
         }
 
-        // 核心 API 抓取
         async function performFetch(query) {
-            showStatus("搜尋中...", true);
+            showStatus("正在向 Wikimedia Commons 搜尋圖片...", true);
             try {
-                // Wikimedia API: 限定 File 命名空間 (ns=6), 寬度 > 800
-                const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&gsrlimit=20&gsroffset=${batchOffset}&prop=imageinfo&iiprop=url|size|extmeta&iiurlwidth=800&format=json&origin=*`;
+                // 取得更多屬性，包含 mime 格式
+                const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&gsrlimit=50&gsroffset=${batchOffset}&prop=imageinfo&iiprop=url|size|extmeta|mime&format=json&origin=*`;
                 
                 const resp = await fetch(url);
                 const data = await resp.json();
 
                 if (!data.query || !data.query.pages) {
-                    showStatus("找不到符合條件的圖片");
+                    showStatus("找不到相關圖片，請嘗試其他英文關鍵字 (例如: dog, tree, building)");
                     return;
                 }
 
                 const pages = Object.values(data.query.pages);
-                // 過濾尺寸
+                
+                // 嚴格過濾條件：大於 800x600，且必須是 JPEG 或 PNG (避免 SVG 壞圖)
                 currentImageData = pages
-                    .filter(p => p.imageinfo && p.imageinfo[0].width >= 800)
+                    .filter(p => p.imageinfo && p.imageinfo[0].width >= 800 && p.imageinfo[0].height >= 600)
+                    .filter(p => p.imageinfo[0].mime === 'image/jpeg' || p.imageinfo[0].mime === 'image/png')
                     .map(p => {
                         const info = p.imageinfo[0];
                         const meta = info.extmeta || {};
                         return {
                             title: p.title.replace("File:", "").split('.')[0],
                             creator: meta.Artist ? meta.Artist.value.replace(/<[^>]*>?/gm, '') : "Unknown",
-                            license: meta.LicenseShortName ? meta.LicenseShortName.value : "CC BY-SA",
+                            license: meta.LicenseShortName ? meta.LicenseShortName.value : "Public Domain",
                             licenseUrl: meta.LicenseUrl ? meta.LicenseUrl.value : "#",
                             imageUrl: info.url,
-                            thumbnailUrl: info.thumburl || info.url,
-                            sourceUrl: `https://commons.wikimedia.org/wiki/${encodeURIComponent(p.title)}`,
                             width: info.width,
                             height: info.height,
                             provider: "Wikimedia Commons"
                         };
-                    }).slice(0, 5);
+                    }).slice(0, 5); // 取前 5 張
 
                 if (currentImageData.length === 0) {
-                    showStatus("找不到足夠大(>800px)的圖片，請試試其他關鍵字");
+                    showStatus("找到的圖片尺寸太小或非 JPG/PNG 格式，請按「換一批」或換關鍵字");
                 } else {
-                    showStatus(`找到 ${currentImageData.length} 張圖片`);
+                    showStatus(`找到 5 張高品質圖片，請選擇一張進行去背`);
                     renderCards();
                 }
             } catch (err) {
-                showStatus("搜尋失敗，請檢查網路連線");
+                showStatus("API 搜尋失敗，請檢查網路狀態");
                 console.error(err);
             }
         }
@@ -214,12 +209,12 @@
                 <div class="image-card bg-white rounded-xl shadow-sm overflow-hidden cursor-pointer hover:shadow-lg ${selectedIndex === idx ? 'selected' : ''}" 
                      onclick="selectImage(${idx})">
                     <div class="h-40 bg-gray-100 relative">
-                        <img src="${img.thumbnailUrl}" class="w-full h-full object-cover" loading="lazy">
+                        <img src="${img.imageUrl}" class="w-full h-full object-cover" loading="lazy" crossorigin="anonymous">
                         ${selectedIndex === idx ? '<div class="absolute top-2 right-2 bg-blue-600 text-white text-[10px] px-2 py-1 rounded-md font-bold shadow-md">已選取</div>' : ''}
                     </div>
                     <div class="p-3">
-                        <p class="text-xs font-bold truncate text-gray-700">${img.title}</p>
-                        <p class="text-[10px] text-gray-400 mt-1">${img.width} x ${img.height} · ${img.license}</p>
+                        <p class="text-xs font-bold truncate text-gray-700" title="${img.title}">${img.title}</p>
+                        <p class="text-[10px] text-gray-400 mt-1">${img.width} x ${img.height}</p>
                     </div>
                 </div>
             `).join('');
@@ -230,68 +225,71 @@
             renderCards();
             const img = currentImageData[idx];
             
-            // 更新預覽
-            const container = document.getElementById('originalContainer');
-            container.innerHTML = `<img src="${img.imageUrl}" id="targetImg" crossorigin="anonymous" class="max-h-[500px] object-contain shadow-2xl">`;
+            document.getElementById('originalContainer').innerHTML = `<img src="${img.imageUrl}" id="targetImg" crossorigin="anonymous" class="max-h-[500px] object-contain shadow-2xl">`;
             document.getElementById('originalSize').innerText = `${img.width} x ${img.height} PX`;
             
-            // 更新授權資訊
             document.getElementById('attributionInfo').innerHTML = `
                 <div><span class="text-gray-500 block mb-1">標題</span>${img.title}</div>
                 <div><span class="text-gray-500 block mb-1">作者</span>${img.creator}</div>
                 <div><span class="text-gray-500 block mb-1">授權協議</span><a href="${img.licenseUrl}" target="_blank" class="text-blue-400 hover:underline">${img.license}</a></div>
-                <div><span class="text-gray-500 block mb-1">來源平台</span>${img.provider} (<a href="${img.sourceUrl}" target="_blank" class="text-blue-400 hover:underline">原始連結</a>)</div>
+                <div><span class="text-gray-500 block mb-1">來源平台</span>${img.provider}</div>
             `;
 
             document.getElementById('aiBtn').disabled = false;
             document.getElementById('downloadBtn').disabled = true;
             document.getElementById('resultContainer').innerHTML = '<p class="text-gray-400">等待處理...</p>';
-            showStatus("已選取圖片，可以開始去背");
+            showStatus("已選圖！可點擊「一鍵 AI 去背」");
         }
 
-        // AI 去背主程式
+        // AI 去背主功能
         async function removeSelectedImageBackground() {
             if (selectedIndex === -1) return;
             const btn = document.getElementById('aiBtn');
-            const status = document.getElementById('statusLabel');
+            const img = currentImageData[selectedIndex];
             
             btn.disabled = true;
-            btn.innerHTML = '<span class="loading-ring mr-2"></span> AI 處理中...';
-            showStatus("AI 正在計算像素，請稍候 (初次執行需載入模組)...", true);
+            btn.innerHTML = '<span class="loading-ring mr-2"></span> 模型載入與處理中...';
+            showStatus("AI 模型下載與處理中 (若為初次執行約需 10~30 秒，請勿關閉網頁)...", true);
 
             try {
-                const img = currentImageData[selectedIndex];
-                const blob = await removeBackground(img.imageUrl, {
-                    debug: false,
-                    model: "medium", // 使用中量級模型平衡速度與品質
-                    progress: (step, current, total) => {
-                        showStatus(`處理中: ${step} (${Math.round(current/total*100)}%)`, true);
-                    }
-                });
+                // 1. 為了避免 Worker 發生 CORS 錯誤，先將圖片 Fetch 下來轉成 Blob
+                const imgResponse = await fetch(img.imageUrl, { cache: 'no-cache' });
+                const imageBlob = await imgResponse.blob();
 
+                // 2. 設定 AI 模組設定檔：極其重要，指定 publicPath 讓其在 GitHub Pages 也能抓到模型檔
+                const config = {
+                    publicPath: "https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.5.5/dist/",
+                    model: "medium", // 畫質與速度的平衡
+                    progress: (key, current, total) => {
+                        const percent = Math.round((current / total) * 100);
+                        if(percent > 0) showStatus(`AI 運算中: ${key} (${percent}%)`, true);
+                    }
+                };
+
+                // 3. 呼叫去背函式
+                const blob = await removeBackground(imageBlob, config);
+
+                // 4. 渲染結果
                 processedBlob = blob;
                 const url = URL.createObjectURL(blob);
-                const resultContainer = document.getElementById('resultContainer');
-                resultContainer.innerHTML = `<img src="${url}" class="max-h-[500px] object-contain drop-shadow-2xl">`;
+                document.getElementById('resultContainer').innerHTML = `<img src="${url}" class="max-h-[500px] object-contain drop-shadow-2xl">`;
                 
                 document.getElementById('downloadBtn').disabled = false;
-                showStatus("去背完成！");
+                showStatus("✅ 去背完成！可以下載了。");
+
             } catch (err) {
-                showStatus("AI 去背失敗，可能因圖片 CORS 限制或記憶體不足");
-                console.error(err);
+                showStatus("❌ AI 去背失敗。請嘗試下方的「自動移除白底」備用工具。");
+                console.error("AI Error:", err);
             } finally {
                 btn.innerHTML = "一鍵 AI 去背";
                 btn.disabled = false;
             }
         }
 
-        // Canvas 備用去背 (針對白底)
+        // Canvas 備用去背 (移除白底)
         function fallbackWhiteRemove() {
             const imgElement = document.getElementById('targetImg');
-            if (!imgElement) {
-                showStatus("請先選擇圖片");
-                return;
-            }
+            if (!imgElement) return showStatus("請先選擇圖片");
 
             const canvas = document.getElementById('processCanvas');
             const ctx = canvas.getContext('2d');
@@ -307,9 +305,8 @@
 
                 for (let i = 0; i < data.length; i += 4) {
                     const r = data[i], g = data[i+1], b = data[i+2];
-                    // 如果接近白色
                     if (r > 255 - tol && g > 255 - tol && b > 255 - tol) {
-                        data[i+3] = 0;
+                        data[i+3] = 0; // 將接近白色的像素透明化
                     }
                 }
 
@@ -319,10 +316,11 @@
                     const url = URL.createObjectURL(blob);
                     document.getElementById('resultContainer').innerHTML = `<img src="${url}" class="max-h-[500px] object-contain">`;
                     document.getElementById('downloadBtn').disabled = false;
-                    showStatus("Canvas 簡易去背完成");
+                    showStatus("✅ Canvas 白底去背完成");
                 });
             } catch (e) {
-                showStatus("圖片受跨域限制，無法使用 Canvas 處理");
+                showStatus("❌ 圖片受跨域限制，無法使用 Canvas 處理");
+                console.error(e);
             }
         }
 
@@ -335,12 +333,13 @@
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
 
         function copyAttribution() {
             if (selectedIndex === -1) return;
             const info = currentImageData[selectedIndex];
-            const text = `圖片名稱: ${info.title}\n作者: ${info.creator}\n授權: ${info.license}\n來源: ${info.sourceUrl}`;
+            const text = `圖片名稱: ${info.title}\n作者: ${info.creator}\n授權: ${info.license}\n來源: ${info.provider}`;
             navigator.clipboard.writeText(text).then(() => alert("已複製授權標示到剪貼簿！"));
         }
 
@@ -358,10 +357,9 @@
 
         function showStatus(msg, isLoading = false) {
             const label = document.getElementById('statusLabel');
-            label.innerHTML = isLoading ? `<span class="loading-ring"></span> <span>${msg}</span>` : msg;
+            label.innerHTML = isLoading ? `<span class="loading-ring"></span> <span class="text-blue-600">${msg}</span>` : msg;
         }
 
-        // 監聽 Enter 鍵
         document.getElementById('searchInput').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') searchImages();
         });
